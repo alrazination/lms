@@ -54,15 +54,23 @@
   // ---- Tracking ----
   let last = null, lastSent = '', finished = false;
 
+  const startedAt = Date.now();
+  const pad = n => String(n).padStart(2, '0');
+  function fmt(ms) {
+    const s = Math.floor(ms / 1000);
+    return pad(Math.floor(s / 3600)) + ':' + pad(Math.floor(s % 3600 / 60)) + ':' + pad(s % 60);
+  }
+  function safe(fn) { try { const v = fn(); return v == null ? '' : v; } catch (e) { return ''; } }
+  
   function snapshot() {
-    try {
-      const c = api.cmi.core;
-      last = {
-        status: c.lesson_status, score: c.score.raw,
-        sessionTime: c.session_time, totalTime: c.total_time,
-        location: c.lesson_location, suspendData: api.cmi.suspend_data
-      };
-    } catch (e) { /* keep previous snapshot */ }
+    last = {
+      status: safe(() => api.cmi.core.lesson_status),
+      score: safe(() => api.cmi.core.score.raw),
+      sessionTime: fmt(Date.now() - startedAt),   // computed here, since session_time can't be read
+      totalTime: safe(() => api.cmi.core.total_time),
+      location: safe(() => api.cmi.core.lesson_location),
+      suspendData: safe(() => api.cmi.suspend_data)
+    };
     return last;
   }
 
