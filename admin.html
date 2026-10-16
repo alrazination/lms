@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="bar">
+  <h1>Admin</h1>
+  <nav><a href="index.html">Learner view</a></nav>
+</header>
+<main>
+  <section class="panel">
+    <form id="keyForm" class="row">
+      <div><label for="key">Admin key</label><input id="key" type="password" required autocomplete="current-password"></div>
+      <div><button type="submit">Unlock</button></div>
+    </form>
+    <p class="msg" id="keyMsg"></p>
+  </section>
+
+  <div id="admin" hidden>
+    <h2>Register a course</h2>
+    <p class="muted">Push the unzipped SCORM package to the repo first, then register it here.</p>
+    <form id="courseForm" class="panel row">
+      <div><label for="cname">Course name</label><input id="cname" required maxlength="160"></div>
+      <div><label for="cfolder">Folder path in repo</label><input id="cfolder" required placeholder="courses/course1"></div>
+      <div><label for="clauncher">Launch file</label><input id="clauncher" value="story.html" placeholder="story.html"></div>
+      <div><button type="submit">Add course</button></div>
+    </form>
+    <p class="msg" id="courseMsg"></p>
+
+    <h2>Courses</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Name</th><th>Folder</th><th>Launch file</th><th>ID</th><th></th></tr></thead>
+      <tbody id="courseRows"></tbody>
+    </table></div>
+
+    <h2>Learner activity</h2>
+    <div class="toolbar">
+      <div><label for="filter">Filter</label><input id="filter" placeholder="Name, ID, course or status"></div>
+      <button class="ghost" id="refresh" type="button">Refresh</button>
+      <button class="ghost" id="csv" type="button">Download CSV</button>
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Learner</th><th>ID</th><th>Course</th><th>Status</th><th>Score</th><th>Session time</th><th>Last activity</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+    <p class="msg" id="trackMsg"></p>
+  </div>
+</main>
+
+<script src="js/config.js"></script>
+<script src="js/api.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let adminKey = sessionStorage.getItem('lms_admin_key') || '';
+let tracking = [];
+
+async function unlock(key) {
+  $('keyMsg').className = 'msg'; $('keyMsg').textContent = 'Checking…';
+  try {
+    tracking = (await apiPost({ action: 'adminTracking', adminKey: key })).data;
+    adminKey = key; sessionStorage.setItem('lms_admin_key', key);
+    $('admin').hidden = false; $('keyMsg').textContent = '';
+    renderTracking(); loadCourses();
+  } catch (err) {
+    $('admin').hidden = true;
+    $('keyMsg').className = 'msg err'; $('keyMsg').textContent = err.message;
+  }
+}
+$('keyForm').addEventListener('submit', e => { e.preventDefault(); unlock($('key').value); });
+if (adminKey) unlock(adminKey);
+
+async function loadCourses() {
+  const courses = await apiGet({ action: 'courses' });
+  $('courseRows').innerHTML = courses.map(c => `<tr>
+    <td>${esc(c.Name)}</td><td>${esc(c.FolderPath)}</td><td>${esc(c.LaunchFile)}</td><td>${esc(c.CourseID)}</td>
+    <td><button class="danger" data-del="${esc(c.CourseID)}">Delete</button></td></tr>`).join('')
+    || '<tr><td colspan="5" class="muted">No courses yet.</td></tr>';
+}
+
+$('courseRows').addEventListener('click', async e => {
+  const id = e.target.dataset.del;
+  if (!id || !confirm('Delete this course from the list? Tracking rows are kept.')) return;
+  try { await apiPost({ action: 'deleteCourse', adminKey, courseId: id }); loadCourses(); }
+  catch (err) { $('courseMsg').className = 'msg err'; $('courseMsg').textContent = err.message; }
+});
+
+$('courseForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const m = $('courseMsg'); m.className = 'msg'; m.textContent = 'Saving…';
+  try {
+    await apiPost({ action: 'addCourse', adminKey, name: $('cname').value,
+      folderPath: $('cfolder').value, launchFile: $('clauncher').value });
+    m.className = 'msg ok'; m.textContent = 'Course added.';
+    $('courseForm').reset(); $('clauncher').value = 'story.html'; loadCourses();
+  } catch (err) { m.className = 'msg err'; m.textContent = err.message; }
+});
+
+function renderTracking() {
+  const q = $('filter').value.toLowerCase();
+  const rows = tracking.filter(t => !q || Object.values(t).join(' ').toLowerCase().includes(q))
+    .sort((a, b) => String(b.LastUpdated).localeCompare(String(a.LastUpdated)));
+  $('rows').innerHTML = rows.map(t => `<tr>
+    <td>${esc(t.Name)}</td><td>${esc(t.UserID)}</td><td>${esc(t.Course)}</td>
+    <td><span class="badge ${esc(t.Status)}">${esc(t.Status)}</span></td>
+    <td>${esc(t.Score)}</td><td>${esc(t.SessionTime)}</td>
+    <td>${t.LastUpdated ? esc(new Date(t.LastUpdated).toLocaleString()) : ''}</td></tr>`).join('');
+  $('trackMsg').textContent = rows.length ? '' : 'No learner activity matches.';
+}
+$('filter').addEventListener('input', renderTracking);
+$('refresh').addEventListener('click', () => unlock(adminKey));
+
+$('csv').addEventListener('click', () => {
+  const cols = ['Name', 'UserID', 'Course', 'Status', 'Score', 'SessionTime', 'TotalTime', 'FirstAccess', 'LastUpdated'];
+  const cell = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  const csv = [cols.join(',')].concat(tracking.map(t => cols.map(c => cell(t[c])).join(','))).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = 'tracking.csv'; a.click();
+});
+</script>
+</body>
+</html>

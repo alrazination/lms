@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Course player</title>
+<link rel="stylesheet" href="css/style.css">
+<!-- Pinned version. To avoid any CDN dependency, download this file into js/ and point the src there. -->
+<script src="https://cdn.jsdelivr.net/npm/scorm-again@2.0.0/dist/scorm12.min.js"></script>
+</head>
+<body class="player">
+<header class="bar">
+  <h1 id="title">Loading…</h1>
+  <nav><span id="saveState"></span><a href="index.html">Exit to courses</a></nav>
+</header>
+<iframe id="frame" title="Course content" allow="fullscreen; autoplay" hidden></iframe>
+
+<script src="js/config.js"></script>
+<script src="js/api.js"></script>
+<script>
+(async function () {
+  const $ = id => document.getElementById(id);
+  const courseId = new URLSearchParams(location.search).get('course');
+  const user = getUser();
+  if (!user) { location.replace('index.html'); return; }
+  if (!courseId) { $('title').textContent = 'No course selected'; return; }
+
+  let course, prior;
+  try {
+    const [courses, mine] = await Promise.all([
+      apiGet({ action: 'courses' }),
+      apiGet({ action: 'myTracking', userId: user.id, courseId })
+    ]);
+    course = courses.find(c => c.CourseID === courseId);
+    prior = mine[0];
+  } catch (err) { $('title').textContent = 'Could not load course: ' + err.message; return; }
+  if (!course) { $('title').textContent = 'Course not found'; return; }
+  $('title').textContent = course.Name;
+
+  // ---- SCORM 1.2 runtime ----
+  const api = new Scorm12API({ autocommit: true, autocommitSeconds: 30, logLevel: 4 });
+  window.API = api;   // SCO finds this by walking up from its iframe
+
+  // Seed learner identity and previous attempt (resume) BEFORE the SCO initializes.
+  const seed = { core: { student_id: user.id, student_name: user.name } };
+  if (prior) {
+    if (prior.Location) seed.core.lesson_location = String(prior.Location);
+    if (prior.Status) seed.core.lesson_status = String(prior.Status);
+    if (prior.Score !== '' && prior.Score != null) seed.core.score = { raw: String(prior.Score) };
+    if (prior.SuspendData) { seed.suspend_data = String(prior.SuspendData); seed.core.entry = 'resume'; }
+  }
+  try { api.loadFromJSON(seed, 'cmi'); } catch (e) { console.warn('Could not preload learner data', e); }
+
+  // ---- Tracking ----
+  let last = null, lastSent = '', finished = false;
+
+  function snapshot() {
+    try {
+      const c = api.cmi.core;
+      last = {
+        status: c.lesson_status, score: c.score.raw,
+        sessionTime: c.session_time, totalTime: c.total_time,
+        location: c.lesson_location, suspendData: api.cmi.suspend_data
+      };
+    } catch (e) { /* keep previous snapshot */ }
+    return last;
+  }
+
+  function send(reason, opts = {}) {
+    const s = snapshot();
+    if (!s) return;
+    const payload = { action: 'track', userId: user.id, userName: user.name, courseId, ...s };
+    const sig = JSON.stringify(s);
+    if (sig === lastSent && !opts.force) return;     // nothing new to save
+    lastSent = sig;
+    $('saveState').textContent = 'Saving…';
+    apiPost(payload, opts.keepalive ? { keepalive: true } : {})
+      .then(() => { $('saveState').textContent = 'Saved ' + new Date().toLocaleTimeString(); })
+      .catch(err => { lastSent = ''; $('saveState').textContent = 'Save failed'; console.error(reason, err); });
+  }
+
+  api.on('LMSCommit', () => send('commit'));
+  api.on('LMSFinish', () => { finished = true; send('finish', { force: true }); });
+  // Safety net: learner closes the tab without the SCO calling LMSFinish.
+  addEventListener('pagehide', () => { if (!finished) send('pagehide', { keepalive: true, force: true }); });
+
+  // ---- Launch ----
+  const base = course.FolderPath.split('/').map(encodeURIComponent).join('/');
+  const file = String(course.LaunchFile || 'index.html').split('/').map(encodeURIComponent).join('/');
+  const frame = $('frame');
+  frame.src = base + '/' + file;
+  frame.hidden = false;
+})();
+</script>
+</body>
+</html>

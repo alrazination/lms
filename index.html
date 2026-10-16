@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My courses</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="bar">
+  <h1>Learning portal</h1>
+  <nav><a href="admin.html">Admin</a></nav>
+</header>
+<main>
+  <section id="login" class="panel" hidden>
+    <h2 style="margin-top:0">Sign in</h2>
+    <form id="loginForm" class="row">
+      <div><label for="uid">Learner ID</label><input id="uid" required maxlength="64" autocomplete="username"></div>
+      <div><label for="uname">Full name</label><input id="uname" required maxlength="120" autocomplete="name"></div>
+      <div><button type="submit">Show my courses</button></div>
+    </form>
+  </section>
+
+  <section id="app" hidden>
+    <div class="toolbar">
+      <div><strong id="who"></strong><div class="muted" id="whoId"></div></div>
+      <button class="ghost" id="logout" type="button">Switch learner</button>
+    </div>
+    <h2 style="margin-top:0">Available courses</h2>
+    <p class="msg" id="msg"></p>
+    <ul class="courses" id="list"></ul>
+  </section>
+</main>
+
+<script src="js/config.js"></script>
+<script src="js/api.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+
+function showLogin() { $('login').hidden = false; $('app').hidden = true; }
+
+$('loginForm').addEventListener('submit', e => {
+  e.preventDefault();
+  localStorage.setItem('lms_user', JSON.stringify({ id: $('uid').value.trim(), name: $('uname').value.trim() }));
+  load();
+});
+$('logout').addEventListener('click', () => { localStorage.removeItem('lms_user'); showLogin(); });
+
+async function load() {
+  const user = getUser();
+  if (!user) return showLogin();
+  $('login').hidden = true; $('app').hidden = false;
+  $('who').textContent = user.name; $('whoId').textContent = 'ID: ' + user.id;
+  $('msg').className = 'msg'; $('msg').textContent = 'Loading courses…';
+  try {
+    const [courses, mine] = await Promise.all([
+      apiGet({ action: 'courses' }),
+      apiGet({ action: 'myTracking', userId: user.id })
+    ]);
+    const byCourse = Object.fromEntries(mine.map(t => [t.CourseID, t]));
+    $('msg').textContent = courses.length ? '' : 'No courses have been added yet.';
+    $('list').innerHTML = courses.map(c => {
+      const t = byCourse[c.CourseID];
+      const status = t ? String(t.Status || 'incomplete') : 'not started';
+      const score = t && t.Score !== '' ? ` · score ${esc(t.Score)}` : '';
+      const label = t ? (status === 'passed' || status === 'completed' ? 'Review' : 'Resume') : 'Launch';
+      return `<li class="panel">
+        <div><h3>${esc(c.Name)}</h3>
+        <span class="badge ${esc(status)}">${esc(status)}</span><span class="muted">${score}</span></div>
+        <a class="btn" href="player.html?course=${encodeURIComponent(c.CourseID)}">${label}</a>
+      </li>`;
+    }).join('');
+  } catch (err) {
+    $('msg').className = 'msg err';
+    $('msg').textContent = 'Could not load courses: ' + err.message;
+  }
+}
+load();
+</script>
+</body>
+</html>
